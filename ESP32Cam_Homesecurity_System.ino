@@ -33,9 +33,6 @@
 const char* AP_SSID = "ESP32-CAM-Setup";
 const char* AP_PASSWORD = "camsetup123";
 
-const char* BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN";
-const char* CHAT_ID = "YOUR_TELEGRAM_CHAT_ID";
-
 const unsigned long MOTION_COOLDOWN = 15000UL;
 const unsigned long WIFI_RETRY_INTERVAL = 15000UL;
 const unsigned long WIFI_CONNECT_TIMEOUT = 15000UL;
@@ -52,6 +49,9 @@ Preferences preferences;
 String savedSSID;
 String savedPassword;
 
+String botToken;
+String chatID;
+
 bool portalActive = false;
 bool cameraReady = false;
 
@@ -60,7 +60,6 @@ unsigned long lastWiFiRetry = 0;
 unsigned long lastCameraRetry = 0;
 
 int reconnectFailures = 0;
-
 
 bool initCamera() {
 
@@ -109,7 +108,6 @@ bool initCamera() {
   } else {
 
     config.fb_location = CAMERA_FB_IN_DRAM;
-
     config.frame_size = FRAMESIZE_QQVGA;
     config.jpeg_quality = 16;
 
@@ -135,14 +133,19 @@ const char PORTAL_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
+
 <meta name="viewport" content="width=device-width, initial-scale=1">
+
 <title>ESP32-CAM Setup</title>
+
 <style>
+
 body {
   font-family: Arial;
   background: #f2f2f2;
   padding: 20px;
 }
+
 .container {
   max-width: 420px;
   margin: auto;
@@ -150,35 +153,62 @@ body {
   padding: 20px;
   border-radius: 10px;
 }
-input,button {
+
+input, button {
   width: 100%;
   padding: 12px;
   margin: 10px 0;
   box-sizing: border-box;
 }
+
 button {
   background: #007bff;
   color: white;
   border: none;
+  border-radius: 6px;
 }
+
+h3 {
+  color: #007bff;
+}
+
 </style>
+
 </head>
+
 <body>
+
 <div class="container">
+
 <h2>ESP32-CAM Setup</h2>
-<p>Enter your Wi-Fi credentials.</p>
 
 <form action="/save" method="POST">
-<label>SSID</label>
-<input name="ssid" required>
 
-<label>Password</label>
-<input name="password" type="password">
+<h3>Home Wi-Fi Configuration</h3>
+
+<label>Wi-Fi SSID</label>
+<input name="ssid" required placeholder="Enter Wi-Fi SSID">
+
+<label>Wi-Fi Password</label>
+<input name="password" type="password"
+placeholder="Enter Wi-Fi password">
+
+<h3>Telegram Configuration</h3>
+
+<label>Telegram Bot Token</label>
+<input name="token" required
+placeholder="Enter Telegram Bot Token">
+
+<label>Telegram Chat ID</label>
+<input name="chatid" required
+placeholder="Enter Telegram Chat ID">
 
 <button type="submit">Save & Connect</button>
+
 </form>
 
 </div>
+
 </body>
 </html>
 )rawliteral";
@@ -232,9 +262,11 @@ void handleRoot() {
 
 void handleSave() {
 
-  if (!server.hasArg("ssid")) {
+  if (!server.hasArg("ssid") ||
+      !server.hasArg("token") ||
+      !server.hasArg("chatid")) {
 
-    server.send(400, "text/plain", "SSID missing");
+    server.send(400, "text/plain", "Required fields missing");
 
     return;
   }
@@ -242,26 +274,47 @@ void handleSave() {
   String newSSID = server.arg("ssid");
   String newPassword = server.arg("password");
 
+  String newBotToken = server.arg("token");
+  String newChatID = server.arg("chatid");
+
   newSSID.trim();
+  newBotToken.trim();
+  newChatID.trim();
 
-  if (newSSID.isEmpty()) {
+  if (newSSID.isEmpty() ||
+      newBotToken.isEmpty() ||
+      newChatID.isEmpty()) {
 
-    server.send(400, "text/plain", "SSID empty");
+    server.send(400, "text/plain", "Required fields cannot be empty");
 
     return;
   }
 
-  // Send response before Wi-Fi connection attempt
+  // Send response before connection attempt
+
   server.send(200, "text/html",
-    "<html><body><h3>Credentials saved.</h3>"
-    "<p>Connecting to Wi-Fi. Close this page.</p>"
+    "<html><body><h3>Settings saved.</h3>"
+    "<p>Connecting to Wi-Fi...</p>"
+    "<p>You may close this page.</p>"
     "</body></html>");
+
+  // Save configuration in Preferences
 
   preferences.putString("ssid", newSSID);
   preferences.putString("password", newPassword);
 
+  preferences.putString("token", newBotToken);
+  preferences.putString("chatid", newChatID);
+
+  // Update running variables
+
   savedSSID = newSSID;
   savedPassword = newPassword;
+
+  botToken = newBotToken;
+  chatID = newChatID;
+
+  Serial.println("Configuration saved.");
 
   delay(500);
 
@@ -280,7 +333,7 @@ void handleSave() {
 
   } else {
 
-    Serial.println("AP remains active.");
+    Serial.println("Connection failed. AP remains active.");
   }
 }
 
@@ -328,22 +381,21 @@ void startPortal() {
   Serial.println(apIP);
 }
 
-
 bool sendTelegramPhoto(camera_fb_t* fb) {
 
   if (!fb || WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
-  if (String(BOT_TOKEN).startsWith("YOUR_") ||
-      String(CHAT_ID).startsWith("YOUR_")) {
+  if (botToken.isEmpty() || chatID.isEmpty()) {
 
-    Serial.println("Configure Telegram token and chat ID.");
+    Serial.println("Telegram configuration missing.");
 
     return false;
   }
 
   WiFiClientSecure client;
+
 
   client.setInsecure();
 
@@ -358,10 +410,10 @@ bool sendTelegramPhoto(camera_fb_t* fb) {
 
   const char* boundary = "CAMBoundary7MA4YWxk";
 
-  char url[150];
+  char url[180];
 
   snprintf(url, sizeof(url),
-           "/bot%s/sendPhoto", BOT_TOKEN);
+           "/bot%s/sendPhoto", botToken.c_str());
 
   String part1;
 
@@ -370,7 +422,7 @@ bool sendTelegramPhoto(camera_fb_t* fb) {
   part1 += "--";
   part1 += boundary;
   part1 += "\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n";
-  part1 += CHAT_ID;
+  part1 += chatID;
   part1 += "\r\n--";
   part1 += boundary;
   part1 += "\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n";
@@ -419,22 +471,46 @@ bool sendTelegramPhoto(camera_fb_t* fb) {
   }
 
 
-  char responseBuffer[160] = {0};
+  char responseBuffer[200] = {0};
 
   size_t responseLength = 0;
+
+  bool telegramOK = false;
 
   unsigned long start = millis();
 
   while (millis() - start < 12000) {
 
-    while (client.available() &&
-           responseLength < sizeof(responseBuffer) - 1) {
+    while (client.available()) {
 
-      responseBuffer[responseLength++] = client.read();
-    }
+      char c = client.read();
 
-    if (responseLength >= sizeof(responseBuffer) - 1) {
-      break;
+
+      if (responseLength < sizeof(responseBuffer) - 1) {
+
+        responseBuffer[responseLength++] = c;
+
+        responseBuffer[responseLength] = '\0';
+      }
+
+
+      if (strstr(responseBuffer, "\"ok\":true") != nullptr) {
+
+        telegramOK = true;
+      }
+
+
+      if (responseLength >= sizeof(responseBuffer) - 1) {
+
+       
+        memmove(responseBuffer,
+                responseBuffer + responseLength - 12,
+                12);
+
+        responseLength = 12;
+
+        responseBuffer[responseLength] = '\0';
+      }
     }
 
     if (!client.connected() && !client.available()) {
@@ -446,11 +522,11 @@ bool sendTelegramPhoto(camera_fb_t* fb) {
 
   client.stop();
 
-  responseBuffer[responseLength] = '\0';
+  Serial.println("Telegram response:");
 
   Serial.println(responseBuffer);
 
-  if (strstr(responseBuffer, "\"ok\":true") != nullptr) {
+  if (telegramOK) {
 
     Serial.println("Telegram photo sent.");
 
@@ -486,7 +562,8 @@ void handleMotion() {
 
   sendTelegramPhoto(fb);
 
-  // Release camera framebuffer immediately after transmission
+  // Release framebuffer immediately
+
   esp_camera_fb_return(fb);
 
   digitalWrite(FLASH_LED_PIN, LOW);
@@ -512,8 +589,12 @@ void setup() {
 
   preferences.begin("camwifi", false);
 
+
   savedSSID = preferences.getString("ssid", "");
   savedPassword = preferences.getString("password", "");
+
+  botToken = preferences.getString("token", "");
+  chatID = preferences.getString("chatid", "");
 
   cameraReady = initCamera();
 
@@ -521,7 +602,11 @@ void setup() {
 
   WiFi.setSleep(false);
 
-  if (savedSSID.isEmpty()) {
+  if (savedSSID.isEmpty() ||
+      botToken.isEmpty() ||
+      chatID.isEmpty()) {
+
+    Serial.println("Configuration incomplete.");
 
     startPortal();
 
@@ -535,7 +620,6 @@ void setup() {
 }
 
 
-
 void loop() {
 
   if (portalActive) {
@@ -546,6 +630,7 @@ void loop() {
   }
 
   // Wi-Fi recovery
+
   if (WiFi.status() != WL_CONNECTED) {
 
     if (millis() - lastWiFiRetry >= WIFI_RETRY_INTERVAL) {
@@ -582,7 +667,7 @@ void loop() {
     return;
   }
 
-  // Camera recovery
+ 
   if (!cameraReady) {
 
     if (millis() - lastCameraRetry >= CAMERA_RETRY_INTERVAL) {
@@ -597,7 +682,7 @@ void loop() {
     return;
   }
 
-  // PIR motion detection
+
   if (digitalRead(PIR_PIN) == HIGH) {
 
     if (millis() - lastMotionTime >= MOTION_COOLDOWN) {
